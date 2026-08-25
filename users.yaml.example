@@ -1,0 +1,35 @@
+# Copy this file to users.yaml and edit it - users.yaml is git-ignored
+# because streamlit-authenticator rewrites it with hashed passwords and
+# adds real emails/login state to it.
+#
+# Passwords below are plaintext; streamlit-authenticator hashes them into
+# users.yaml automatically on first run. Change every example password and
+# `cookie.key` before giving anyone real access.
+#
+# Group "ALL" is a superuser sentinel: it bypasses document filtering
+# entirely (equivalent to "has access to everyone's NAS drive"). It also
+# unlocks the "Sync documents" button in the sidebar.
+credentials:
+  usernames:
+    admin:
+      name: Admin
+      password: changeme-admin
+      email: admin@example.com
+    hr_alice:
+      name: Alice (HR)
+      password: changeme-hr
+      email: alice@example.com
+    eng_bob:
+      name: Bob (Engineering)
+      password: changeme-eng
+      email: bob@example.com
+
+cookie:
+  name: rag_assistant_auth
+  key: change-this-to-a-random-secret
+  expiry_days: 7
+
+groups:
+  admin: ["ALL"]
+  hr_alice: ["HR"]
+  eng_bob: ["Engineering"]

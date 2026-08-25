@@ -10,4 +10,9 @@ langchain-text-splitters==1.1.2
 sentence-transformers==6.0.0
 chromadb==1.5.9
 pypdf==6.16.2
+python-docx==1.2.0
 python-dotenv==1.2.3
+PyYAML==6.0.3
+rank_bm25==0.2.2
+streamlit==1.62.0
+streamlit-authenticator==0.4.2

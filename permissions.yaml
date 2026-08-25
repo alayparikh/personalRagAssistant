@@ -1,0 +1,12 @@
+# Maps a docs/ subfolder to the groups allowed to see files under it.
+# The longest matching folder prefix wins. Anything not under a listed
+# folder falls back to default_groups.
+#
+# Changing this file does NOT retroactively re-tag already-indexed files -
+# sync only reprocesses files whose content changed. Run `--cli --reindex`
+# after editing this file to re-tag everything with the new mapping.
+folders:
+  docs/HR: ["HR", "VP"]
+  docs/Engineering: ["Engineering", "VP"]
+
+default_groups: ["Everyone"]

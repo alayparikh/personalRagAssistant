@@ -4,3 +4,4 @@ chroma_db/
 docs/
 .DS_Store
 .env
+users.yaml
