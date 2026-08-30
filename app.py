@@ -1,12 +1,20 @@
 import os
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 
-from rag import HISTORY_TURNS, build_chain, get_vectorstore
+from rag import HISTORY_TURNS, answer_question, build_chain, get_vectorstore
 
 load_dotenv()
+
+# Per-session rate limit. In-memory and per-process - resets on restart and
+# doesn't share state across multiple app instances. Fine for a single
+# small-team deployment; a multi-instance rollout needs a shared store
+# (Redis) instead.
+RATE_LIMIT_MAX_REQUESTS = 30
+RATE_LIMIT_WINDOW_SECONDS = 3600
 
 st.set_page_config(page_title="RAG Assistant", page_icon="📄", layout="centered")
 st.title("📄 RAG Assistant")
@@ -40,6 +48,8 @@ if chain is None:
 
 if "messages" not in st.session_state:
     st.session_state.messages = []  # [{"role", "content", "sources"}]
+if "request_times" not in st.session_state:
+    st.session_state.request_times = []
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -49,29 +59,41 @@ for msg in st.session_state.messages:
 
 question = st.chat_input("Ask a question about your documents...")
 if question:
+    now = time.time()
+    st.session_state.request_times = [
+        t for t in st.session_state.request_times if now - t < RATE_LIMIT_WINDOW_SECONDS
+    ]
+
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
-    chat_history = []
-    for m in st.session_state.messages[:-1]:
-        cls = HumanMessage if m["role"] == "user" else AIMessage
-        chat_history.append(cls(content=m["content"]))
-    chat_history = chat_history[-HISTORY_TURNS * 2:]
-
-    with st.chat_message("assistant"):
-        try:
-            with st.spinner("Thinking..."):
-                response = chain.invoke({"input": question, "chat_history": chat_history})
-            answer = response["answer"]
-            sources = sorted({d.metadata.get("source", "?") for d in response.get("context", [])})
-            st.markdown(answer)
-            if sources:
-                st.caption("Sources: " + ", ".join(sources))
-        except Exception as e:
-            answer = f"Error: {e}"
-            sources = []
+    if len(st.session_state.request_times) >= RATE_LIMIT_MAX_REQUESTS:
+        answer = (f"Rate limit reached ({RATE_LIMIT_MAX_REQUESTS} questions per "
+                  f"hour). Please try again later.")
+        sources = []
+        with st.chat_message("assistant"):
             st.error(answer)
+    else:
+        st.session_state.request_times.append(now)
+
+        chat_history = []
+        for m in st.session_state.messages[:-1]:
+            cls = HumanMessage if m["role"] == "user" else AIMessage
+            chat_history.append(cls(content=m["content"]))
+        chat_history = chat_history[-HISTORY_TURNS * 2:]
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = answer_question(chain, question, chat_history)
+            answer = response["answer"]
+            sources = sorted(response["sources_used"])
+            if response["guardrail"] and response["guardrail"].startswith("api_error"):
+                st.error(answer)
+            else:
+                st.markdown(answer)
+                if sources:
+                    st.caption("Sources: " + ", ".join(sources))
 
     st.session_state.messages.append({
         "role": "assistant",
