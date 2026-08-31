@@ -1,0 +1,19 @@
+Jane Doe
+Atlanta, GA | jane.doe@example.com | +1 (555) 010-0100
+
+Professional Summary
+Senior Platform Engineer with 7 years of experience building distributed
+systems, data pipelines, and internal developer tooling.
+
+Experience
+
+Staff Engineer | Acme Robotics, Atlanta, GA | Mar 2023 - Present
+- Led the Orion project, a service mesh migration covering 40 microservices.
+- Built automated canary analysis that cut failed deploys by half.
+
+Backend Engineer | Globex Corp, Remote | Jun 2019 - Feb 2023
+- Designed the billing reconciliation pipeline processing 2M events daily.
+- Owned on-call rotation and incident review for the payments platform.
+
+Skills
+Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka

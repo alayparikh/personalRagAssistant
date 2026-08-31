@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_eval:
+        description: "Also run the --live eval (real Claude API calls, costs money)"
+        type: boolean
+        default: false
+
+jobs:
+  # Unit tests + retrieval eval. No API key, no cost - safe on every PR.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      # The embedding model downloads once and is reused across runs; without
+      # this every job re-downloads ~90MB from the HF hub.
+      - name: Cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('requirements.txt') }}
+
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+      # Runs against the committed synthetic corpus in eval/fixtures/, not the
+      # real docs/ - those are git-ignored because they hold personal records.
+      - name: Retrieval eval (fixture corpus)
+        env:
+          RAG_DOCS_PATH: ./eval/fixtures/docs
+          RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
+          RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
+        run: python eval/run_eval.py --golden-set eval/fixtures/golden_set.yaml
+
+  # Manual only: checks generated answers, refusal behaviour, and injection
+  # resistance. Needs ANTHROPIC_API_KEY in repo secrets and costs money, so it
+  # never runs automatically on a PR.
+  live-eval:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('requirements.txt') }}
+
+      - name: Live eval (fixture corpus)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RAG_DOCS_PATH: ./eval/fixtures/docs
+          RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
+          RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
+        run: python eval/run_eval.py --live --golden-set eval/fixtures/golden_set.yaml

@@ -1,9 +1,15 @@
 venv/
 __pycache__/
-chroma_db/
-docs/
+.pytest_cache/
 .DS_Store
 .env
+
+# Leading slash matters: only the real corpus at the repo root is private.
+# A bare "docs/" would also match eval/fixtures/docs/, which must be
+# committed for CI to have anything to index.
+/docs/
+/chroma_db/
+/logs/
+
 users.yaml
-logs/
 eval/golden_set.yaml

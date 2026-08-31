@@ -86,20 +86,40 @@ All enforced inside `answer_question()`:
 - **Source attribution** — the "Sources" footer lists only files Claude reports actually using, via a `sources_used` schema field (`with_structured_output`), validated against what was retrieved. A plain text-instruction version of this was tried first and proved unreliable — the model dropped it on longer answers.
 - **Rate limiting** (web UI only) — 30 questions/hour per session. In-memory; multi-instance needs Redis.
 
-Every request logs a JSON line to `logs/events.jsonl`: question length, sources retrieved vs. used, guardrail fired, latency.
+## Logging
+
+Every request appends a JSON line to `logs/events.jsonl` (rotating, ~50MB ceiling):
+
+```json
+{"ts": 1788..., "question_len": 34, "num_sources": 7, "num_sources_used": 2,
+ "sources_retrieved": ["./docs/a.pdf", "./docs/b.docx"], "sources_used": ["./docs/b.docx"],
+ "guardrail": null, "latency_ms": 4633, "input_tokens": 4053, "output_tokens": 255,
+ "cost_usd": 0.010656, "models_called": ["claude-sonnet-5"]}
+```
+
+Token counts come from a `get_usage_metadata_callback()` wrapping the whole pipeline, so they include the **query-rewrite call** that fires on follow-up turns — a first question costs one API call, every follow-up costs two. `cost_usd` is `0.0` when a guardrail short-circuited before any API call, and `null` when tokens were spent on a model absent from `PRICING` (never silently priced at zero).
+
+Source **paths** are logged, never chunk text — the log file isn't access-controlled.
 
 ## Evals
 
 `eval/golden_set.yaml` holds test questions grounded in your actual `docs/` content — fact lookups, out-of-scope negatives (should refuse), a multi-turn follow-up, and a prompt-injection attempt. Git-ignored; `eval/golden_set.example.yaml` is the schema template.
 
 ```bash
+python -m pytest tests/ -q       # unit tests, fast, no API
 python eval/run_eval.py          # retrieval-only, free — checks the right chunks were found
 python eval/run_eval.py --live   # real API calls — checks generated answers
 ```
 
-Run retrieval-only after any change to chunking, embeddings, or retriever weights — it catches the class of bug where a literal query stops matching. `--live` additionally verifies refusal and injection resistance. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression.
+`--live` additionally verifies refusal and injection resistance. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
 
-Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
+**Why both tests and evals.** A hybrid retriever is deliberately redundant: when BM25 degrades, vector search often still surfaces the right chunk. That's good for users and bad for detection — a deliberately broken `_tokenize()` was measured passing the full retrieval eval while `tests/test_units.py` caught it immediately. Evals cover the pipeline end to end; unit tests guard the components the pipeline can mask.
+
+### CI
+
+`.github/workflows/ci.yml` runs unit tests + the retrieval eval on every push and PR — no API key, no cost. It runs against the committed synthetic corpus in `eval/fixtures/` (not `docs/`, which is git-ignored), driven by the `RAG_DOCS_PATH` / `RAG_PERSIST_PATH` / `RAG_LOG_PATH` env overrides. The `--live` eval is a manual `workflow_dispatch` job, since it costs money and needs `ANTHROPIC_API_KEY` in repo secrets.
+
+The fixture corpus is 30 chunks of deliberately competing content — several similar résumés plus engineering runbooks — because a small or semantically well-separated corpus lets every query retrieve everything, and an eval that can't fail is worse than no eval.
 
 ## Multi-user access control (built, currently disabled)
 

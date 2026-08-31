@@ -1,6 +1,8 @@
 import argparse
 import hashlib
 import json
+import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -22,6 +24,7 @@ from langchain_classic.chains.history_aware_retriever import create_history_awar
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.documents import Document
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
@@ -31,18 +34,30 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
-DOCS_PATH = "./docs"
-PERSIST_PATH = "./chroma_db"
+# Overridable via env so tests/CI can point at a fixture corpus and a
+# throwaway index without touching the real ones.
+DOCS_PATH = os.environ.get("RAG_DOCS_PATH", "./docs")
+PERSIST_PATH = os.environ.get("RAG_PERSIST_PATH", "./chroma_db")
 MANIFEST_PATH = os.path.join(PERSIST_PATH, "manifest.json")
-PERMISSIONS_PATH = "./permissions.yaml"
+PERMISSIONS_PATH = os.environ.get("RAG_PERMISSIONS_PATH", "./permissions.yaml")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MODEL = "claude-sonnet-5"
 HISTORY_TURNS = 10  # remember last 10 exchanges
 SUPERUSER_GROUP = "ALL"  # bypasses document filtering entirely
 
 MAX_QUESTION_LENGTH = 2000  # input guardrail: reject before any retrieval/LLM call
-LOG_PATH = "./logs/events.jsonl"
+LOG_PATH = os.environ.get("RAG_LOG_PATH", "./logs/events.jsonl")
+LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 10 * 1024 * 1024))
+LOG_BACKUP_COUNT = 5  # with LOG_MAX_BYTES, caps the log directory at ~50MB
 NO_CONTEXT_ANSWER = "I don't have information on that in the indexed documents."
+
+# USD per 1M tokens, (input, output). A model missing here logs its token
+# counts with cost_usd=None rather than being priced with a guessed rate.
+PRICING = {
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
 
 # High-precision only: patterns specific enough that a false positive is
 # unlikely to clobber legitimate content (medical record IDs, phone
@@ -65,10 +80,59 @@ def redact_secrets(text):
     return text, redacted
 
 
+_event_logger = None
+
+
+# One rotating handler, created lazily and only once. Streamlit re-executes
+# the script on every interaction, so an unguarded setup would stack a new
+# handler per rerun and write each event N times.
+def _get_event_logger():
+    global _event_logger
+    if _event_logger is not None:
+        return _event_logger
+
+    os.makedirs(os.path.dirname(LOG_PATH) or ".", exist_ok=True)
+    logger = logging.getLogger("rag.events")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # keep events out of the root/console logger
+
+    if not logger.handlers:
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))  # raw JSON per line
+        logger.addHandler(handler)
+
+    _event_logger = logger
+    return logger
+
+
 def log_event(event):
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    with open(LOG_PATH, "a") as f:
-        f.write(json.dumps({"ts": time.time(), **event}) + "\n")
+    _get_event_logger().info(json.dumps({"ts": time.time(), **event}))
+
+
+# Collapse the callback's per-model usage into flat totals plus a cost.
+# Returns cost_usd=None (not 0) when a model isn't in PRICING, so "unpriced"
+# stays distinguishable from "genuinely free" when summing a day of logs.
+def summarize_usage(usage_metadata):
+    input_tokens = sum(u.get("input_tokens", 0) for u in usage_metadata.values())
+    output_tokens = sum(u.get("output_tokens", 0) for u in usage_metadata.values())
+
+    cost = 0.0
+    for model, usage in usage_metadata.items():
+        if model not in PRICING:
+            cost = None
+            break
+        in_rate, out_rate = PRICING[model]
+        cost += (usage.get("input_tokens", 0) / 1_000_000) * in_rate
+        cost += (usage.get("output_tokens", 0) / 1_000_000) * out_rate
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": round(cost, 6) if cost is not None else None,
+        "models_called": sorted(usage_metadata),
+    }
 
 
 # Load the folder -> allowed-groups mapping used to tag each chunk on ingest
@@ -411,13 +475,24 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
     start = time.time()
     log_context = log_context or {}
 
-    def finish(answer, context, guardrail, sources_used=()):
+    def finish(answer, context, guardrail, sources_used=(), usage=None):
+        # No usage means no LLM call happened (a guardrail short-circuit),
+        # which is genuinely free - hence 0.0, not None. None is reserved
+        # for "tokens were spent but the model isn't in PRICING".
+        usage = usage if usage is not None else {
+            "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models_called": [],
+        }
         log_event({
             "question_len": len(question),
             "num_sources": len(context),
             "num_sources_used": len(sources_used),
+            # Paths only, never chunk text - this file is not access-controlled
+            # and the corpus can hold medical records and resumes.
+            "sources_retrieved": sorted({d.metadata.get("source", "?") for d in context}),
+            "sources_used": sorted(sources_used),
             "guardrail": guardrail,
             "latency_ms": round((time.time() - start) * 1000),
+            **usage,
             **log_context,
         })
         return {"answer": answer, "context": context, "guardrail": guardrail,
@@ -429,9 +504,25 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
             [], "input_too_long",
         )
 
-    # Both steps below call the LLM (query rewriting, then answer
-    # generation), so both need the same typed-error handling - a
-    # rate-limit/auth/timeout failure can happen during either one.
+    # _generate returns the same tuple finish() takes rather than logging
+    # itself, so every exit path inside the block - including the error
+    # paths - has its token usage counted before the event is written.
+    # The callback is an inheritable context var, so it captures the
+    # query-rewrite call inside create_history_aware_retriever too, not
+    # just the answer call.
+    with get_usage_metadata_callback() as usage_cb:
+        answer, context, guardrail, sources_used = _generate(
+            rag_chain, question, chat_history
+        )
+
+    return finish(answer, context, guardrail, sources_used,
+                  summarize_usage(usage_cb.usage_metadata))
+
+
+# Retrieval + generation with typed error handling. Both steps call the LLM
+# (query rewriting, then answer generation), so a rate-limit/auth/timeout
+# failure can happen during either one.
+def _generate(rag_chain, question, chat_history):
     try:
         context = rag_chain.history_aware_retriever.invoke({
             "input": question, "chat_history": chat_history,
@@ -439,10 +530,10 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
     except (ModelAuthenticationError, ModelRateLimitError, ModelTimeoutError,
             ModelConnectionError, ModelAPIError) as e:
         message, tag = _api_error_message(e)
-        return finish(message, [], tag)
+        return message, [], tag, []
 
     if not context:
-        return finish(NO_CONTEXT_ANSWER, [], "no_context")
+        return NO_CONTEXT_ANSWER, [], "no_context", []
 
     try:
         result = rag_chain.answer_chain.invoke({
@@ -451,7 +542,7 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
     except (ModelAuthenticationError, ModelRateLimitError, ModelTimeoutError,
             ModelConnectionError, ModelAPIError) as e:
         message, tag = _api_error_message(e)
-        return finish(message, context, tag)
+        return message, context, tag, []
 
     # Validate against what was actually retrieved - a path the model
     # names that wasn't in the retrieved context is dropped rather than
@@ -460,7 +551,7 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
     sources_used = [s for s in result.sources_used if s in retrieved]
 
     answer, was_redacted = redact_secrets(result.answer)
-    return finish(answer, context, "secret_redacted" if was_redacted else None, sources_used)
+    return answer, context, "secret_redacted" if was_redacted else None, sources_used
 
 
 def _api_error_message(e):

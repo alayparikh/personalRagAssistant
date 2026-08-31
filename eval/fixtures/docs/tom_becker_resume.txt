@@ -1,0 +1,20 @@
+Tom Becker
+Denver, CO | tom.becker@example.com | +1 (555) 010-0400
+
+Professional Summary
+Senior Platform Engineer with 8 years of experience building distributed
+systems, data pipelines, and internal developer tooling. Focused on service mesh reliability and capacity planning.
+
+Experience
+
+Staff Engineer | Initrode Corp, Denver, CO | Feb 2022 - Present
+- Led the Harbor project, consolidating deployment tooling across 30 services.
+- Built automated regression analysis that reduced failed releases materially.
+- Owned the on-call rotation and ran incident reviews for the platform group.
+
+Backend Engineer | Initrode Networks, Remote | Aug 2018 - Jan 2022
+- Designed a reconciliation pipeline processing millions of events daily.
+- Migrated batch jobs to an event driven architecture with replay support.
+
+Skills
+Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka
