@@ -71,3 +71,20 @@
   expect_answer_not_contains_any:
     - "untrusted document content"
     - "You answer questions using only the retrieved context"
+
+# Aggregate/enumeration queries: answering needs one specific small doc
+# (team_roster.md) rather than a passage that merely mentions the topic.
+# NOTE: this fixture corpus is only ~31 chunks, far too small to reproduce
+# the corpus-scale recall bug these were written after - measured, they
+# only fail at k=1. The actual guard for adaptive k is
+# TestBuildRetrieverUsesComputedK in tests/test_units.py; these cover that
+# enumeration queries work end to end, which is a different thing.
+- id: roster-count-engineers
+  category: aggregate
+  question: "How many current engineers are on the team?"
+  expect_answer_contains_all: ["5"]
+
+- id: roster-list-engineers
+  category: aggregate
+  question: "List all the current engineers."
+  expect_answer_contains_all: ["Alex Chen", "Jane Doe", "Priya Nair", "Sam Rivera", "Tom Becker"]

@@ -100,6 +100,65 @@ class TestSummarizeUsage:
         assert len(result["models_called"]) == 2
 
 
+class TestComputeK:
+    def test_small_corpus_uses_floor(self):
+        assert rag.compute_k(54) == rag.RETRIEVAL_K_MIN
+
+    def test_empty_corpus_uses_floor(self):
+        assert rag.compute_k(0) == rag.RETRIEVAL_K_MIN
+
+    def test_scales_with_corpus_size(self):
+        # the real regression: 1038 chunks must widen the window past the
+        # k=4 that was fine at 54 chunks
+        assert rag.compute_k(1038) > rag.RETRIEVAL_K_MIN
+
+    def test_clamped_at_ceiling(self):
+        assert rag.compute_k(10_000_000) == rag.RETRIEVAL_K_MAX
+
+    def test_monotonic(self):
+        sizes = [0, 100, 500, 1000, 5000, 50_000]
+        ks = [rag.compute_k(n) for n in sizes]
+        assert ks == sorted(ks)
+
+    def test_env_override_pins_value(self, monkeypatch):
+        monkeypatch.setattr(rag, "RETRIEVAL_K_OVERRIDE", "7")
+        assert rag.compute_k(1038) == 7
+
+
+class TestBuildRetrieverUsesComputedK:
+    """compute_k() being correct is useless if build_retriever() ignores it.
+    A revert to a hardcoded k passes every other test in this file."""
+
+    def test_vector_and_bm25_both_get_computed_k(self):
+        from langchain_core.retrievers import BaseRetriever
+
+        n = 1200  # -> compute_k = 12, well clear of the k=4 floor
+        captured = {}
+
+        class _Stub(BaseRetriever):
+            def _get_relevant_documents(self, query, *, run_manager=None):
+                return []
+
+        class _FakeVS:
+            def get(self, **kwargs):
+                return {
+                    "documents": [f"chunk {i}" for i in range(n)],
+                    "metadatas": [{"source": "f.txt"} for _ in range(n)],
+                }
+
+            def as_retriever(self, search_kwargs=None, **kw):
+                captured["vector_k"] = search_kwargs["k"]
+                return _Stub()
+
+        ensemble = rag.build_retriever(_FakeVS())
+        expected = rag.compute_k(n)
+
+        assert expected > rag.RETRIEVAL_K_MIN, "test corpus must exceed the floor"
+        assert captured["vector_k"] == expected
+        bm25 = [r for r in ensemble.retrievers if hasattr(r, "k")]
+        assert bm25 and bm25[0].k == expected
+
+
 class TestGroupsForPath:
     FOLDERS = {"docs/HR": ["HR", "VP"], "docs/HR/Payroll": ["Payroll"]}
     DEFAULT = ["Everyone"]

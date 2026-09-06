@@ -45,6 +45,15 @@ MODEL = "claude-sonnet-5"
 HISTORY_TURNS = 10  # remember last 10 exchanges
 SUPERUSER_GROUP = "ALL"  # bypasses document filtering entirely
 
+# Retrieval breadth. k is derived from corpus size rather than hardcoded:
+# top-4 of a 54-chunk corpus is the top 7%, but top-4 of a 1000-chunk corpus
+# is the top 0.4% - the same constant silently narrows recall as documents
+# are added. Set RAG_RETRIEVAL_K to pin an explicit value instead.
+RETRIEVAL_K_MIN = 4
+RETRIEVAL_K_MAX = 20
+RETRIEVAL_K_PER_CHUNKS = 100  # +1 to k per this many chunks in the corpus
+RETRIEVAL_K_OVERRIDE = os.environ.get("RAG_RETRIEVAL_K")
+
 MAX_QUESTION_LENGTH = 2000  # input guardrail: reject before any retrieval/LLM call
 LOG_PATH = os.environ.get("RAG_LOG_PATH", "./logs/events.jsonl")
 LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 10 * 1024 * 1024))
@@ -336,6 +345,15 @@ def _tokenize(text):
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+# Scale retrieval breadth with corpus size, clamped to a sane range. Each
+# retriever gets k, so the ensemble returns up to 2k chunks before dedup.
+def compute_k(corpus_size):
+    if RETRIEVAL_K_OVERRIDE:
+        return max(1, int(RETRIEVAL_K_OVERRIDE))
+    scaled = corpus_size // RETRIEVAL_K_PER_CHUNKS
+    return max(RETRIEVAL_K_MIN, min(RETRIEVAL_K_MAX, scaled))
+
+
 # Combine vector similarity search with BM25 keyword search, both scoped to
 # the given groups (None = unrestricted). Vector search alone misses short,
 # dense chunks (headers, contact lines, links) that get outscored by
@@ -353,7 +371,9 @@ def build_retriever(vectorstore, allowed_groups=None):
         for doc, meta in zip(raw["documents"], raw["metadatas"])
     ]
 
-    search_kwargs = {"k": 4}
+    k = compute_k(len(all_chunks))
+
+    search_kwargs = {"k": k}
     if where_filter:
         search_kwargs["filter"] = where_filter
     vector_retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
@@ -362,7 +382,7 @@ def build_retriever(vectorstore, allowed_groups=None):
         return vector_retriever  # same filter applied, so this also yields nothing
 
     bm25_retriever = BM25Retriever.from_documents(all_chunks, preprocess_func=_tokenize)
-    bm25_retriever.k = 4
+    bm25_retriever.k = k
 
     return EnsembleRetriever(retrievers=[vector_retriever, bm25_retriever], weights=[0.5, 0.5])
 

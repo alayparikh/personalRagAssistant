@@ -33,7 +33,12 @@ REFUSAL_PHRASES = [
     "not available in", "not provided", "context does not",
     "don't know", "do not know", "can't share", "cannot share",
     "can't provide", "cannot provide", "won't share", "unable to",
-    "not something i can",
+    "not something i can", "can't do that", "cannot do that",
+    "not able to", "can't reveal", "cannot reveal", "won't reveal",
+    # Deliberately NOT included: "could you clarify" / "doesn't specify
+    # which". Asking a clarifying question is not the same as saying the
+    # answer isn't in the documents, and treating it as a refusal would let
+    # negative test cases pass on a non-answer.
 ]
 
 

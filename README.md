@@ -46,7 +46,7 @@ docs/ → discover_files() → file_hash() vs manifest.json (skip unchanged)
 question → answer_question()          ← every guardrail lives here
    ├ length cap                        reject before any API call
    ├ history-aware retriever           LLM call only if chat history exists
-   │    └ EnsembleRetriever = vector (k=4) + BM25 keyword (k=4)
+   │    └ EnsembleRetriever = vector (k) + BM25 keyword (k), k scales with corpus
    ├ empty context? → short-circuit, never calls Claude
    ├ structured-output answer → claude-sonnet-5
    ├ validate sources_used ⊆ retrieved, redact secrets
@@ -62,6 +62,8 @@ question → answer_question()          ← every guardrail lives here
 | `eval/run_eval.py` | Golden-set eval runner; exits non-zero on failure (CI-ready) |
 | `permissions.yaml` | Folder → group ACL map (committed) |
 | `users.yaml` | Logins + groups (git-ignored; RBAC currently dormant) |
+
+**Adaptive retrieval breadth.** `k` is derived from corpus size (`compute_k()`), not hardcoded — roughly +1 per 100 chunks, clamped to 4–20, overridable with `RAG_RETRIEVAL_K`. A fixed `k=4` was fine at 54 chunks (the top 7% of the corpus) but silently starved recall at 1,038 chunks (top 0.4%): a document listing every employee stopped being retrieved for "how many employees are there", and the assistant correctly refused rather than guessing. Wider retrieval costs more per question — measured ~$0.011 → ~$0.020 — which is the deliberate tradeoff.
 
 **Notable implementation details:** `.docx` hyperlinks are recovered from the document's relationship table (plain-text extraction drops the URL and keeps only anchor text like "LinkedIn"). BM25 uses a custom regex tokenizer — the default splits on whitespace, making a whole URL one unmatchable token.
 
@@ -135,5 +137,5 @@ Empty group list fails closed (denies everything), not open.
 ## Notes
 
 - Indexing and retrieval are fully local — no API cost, no network call.
-- Corpus size doesn't change per-question cost: retrieval is always top-k. Cost scales with query volume and conversation length.
+- Corpus size doesn't change per-question cost much: retrieval is always top-k, and k grows only slowly with the corpus. Cost scales mainly with query volume and conversation length.
 - `venv/`, `chroma_db/`, `docs/`, `.env`, `users.yaml`, `logs/`, and `eval/golden_set.yaml` are git-ignored — a fresh clone starts clean.
