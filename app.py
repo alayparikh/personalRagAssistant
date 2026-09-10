@@ -88,12 +88,22 @@ if question:
                 response = answer_question(chain, question, chat_history)
             answer = response["answer"]
             sources = sorted(response["sources_used"])
-            if response["guardrail"] and response["guardrail"].startswith("api_error"):
+            guardrail = response["guardrail"] or ""
+            # Every stage that failed closed renders as a visible error rather
+            # than as an answer, so a degraded pipeline can't look like a
+            # confident result.
+            if guardrail.startswith(("api_error", "retrieval_error", "generation_error")):
                 st.error(answer)
+            elif guardrail.startswith("output_blocked"):
+                st.error(answer)
+                st.caption("Blocked by the output scanner.")
             else:
                 st.markdown(answer)
                 if sources:
                     st.caption("Sources: " + ", ".join(sources))
+                if "output_flagged:" in guardrail:
+                    st.warning("Output scanner flagged this answer: "
+                               + guardrail.split("output_flagged:", 1)[1])
 
     st.session_state.messages.append({
         "role": "assistant",
